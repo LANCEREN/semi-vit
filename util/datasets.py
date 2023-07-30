@@ -38,7 +38,7 @@ class ImageFolderWithMask(ImageFolder):
         mask = False if self.root=="/mnt/ext/renge/mini-imagenet-data/train" else True
         if mask ==False: ground_truth_label=5
 
-        return image, ground_truth_label
+        return image, ground_truth_label, mask
 
 class ImageFolderWithIndex(ImageFolder):
 

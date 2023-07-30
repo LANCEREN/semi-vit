@@ -185,12 +185,6 @@ def main(args):
     cudnn.benchmark = True
 
     dataset_train = build_dataset(is_train=True, args=args)
-    # dataset for single target
-    # args.unautho_data_path='/mnt/ext/renge/mini-imagenet-data'
-    # args.autho_data_path='/mnt/ext/renge/model_lock-data/mini-StegaStamp-data/hidden'
-    # unautho_dataset_train, autho_dataset_train = build_dataset_contrast(is_train=True, args=args)
-    # dataset_train = unautho_dataset_train.__add__(autho_dataset_train)
-
     dataset_val = build_dataset(is_train=False, args=args)
 
     if True:  # args.distributed:
