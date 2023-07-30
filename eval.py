@@ -1,10 +1,3 @@
-# ------------------------------------------------------------------------
-# Modified from MAE (https://github.com/facebookresearch/mae)
-# Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
-# Licensed under the CC-BY-NC 4.0 license.
-# ------------------------------------------------------------------------
-# Modifications Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
 
 import argparse
 import datetime
@@ -24,7 +17,7 @@ from timm.utils import ModelEma
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset_ssl
+from util.datasets import build_dataset
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -139,7 +132,7 @@ def get_args_parser():
                         help='path to train trainindex_u (default: None)')
     parser.add_argument('--anno_percent', type=float, default=0.1, help='number of labeled data')
 
-    parser.add_argument('--output_dir', default='/home/renge/Pycharm_Projects/semi-vit/logs/semi-supervised',
+    parser.add_argument('--output_dir', default='/home/renge/Pycharm_Projects/semi-vit/logs/eval',
                         help='path where to save, empty for no saving')
     parser.add_argument('--comment', default='semi-supervised',
                         help='comment')
@@ -204,8 +197,49 @@ def get_args_parser():
     return parser
 
 
+def auto_select_gpu(mem_bound=1000, utility_bound=30, gpus=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+                    num_gpu=1, selected_gpus=None):
+    import sys
+    import os
+    import subprocess
+    import re
+    import time
+    import numpy as np
+    if 'CUDA_VISIBLE_DEVICES' in os.environ:
+        print("CUDA_VISIBLE_DEVCIES in os.environ has been set.")
+        # sys.exit(0)
+    if selected_gpus is None:
+        mem_trace = []
+        utility_trace = []
+        for i in range(5):  # sample 5 times
+            info = subprocess.check_output('nvidia-smi', shell=True).decode('utf-8')
+            mem = [int(s[:-5]) for s in re.compile('\d+MiB\s/').findall(info)]
+            utility = [int(re.compile('\d+').findall(s)[0]) for s in re.compile('\d+%\s+Default').findall(info)]
+            mem_trace.append(mem)
+            utility_trace.append(utility)
+            time.sleep(0.1)
+        mem = np.mean(mem_trace, axis=0)
+        utility = np.mean(utility_trace, axis=0)
+        assert (len(mem) == len(utility))
+        nGPU = len(utility)
+        ideal_gpus = [i for i in range(nGPU) if mem[i] <= mem_bound and utility[i] <= utility_bound and i in gpus]
+
+        if len(ideal_gpus) < num_gpu:
+            print("No sufficient resource, available: {}, require {} gpu".format(ideal_gpus, num_gpu))
+            sys.exit(0)
+        else:
+            selected_gpus = list(map(str, ideal_gpus[:num_gpu]))
+    else:
+        selected_gpus = selected_gpus.split(',')
+
+    print("Setting GPU: {}".format(selected_gpus))
+    os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(selected_gpus)
+    return selected_gpus
 def main(args):
-    misc.init_distributed_mode(args)
+    args.gpu=auto_select_gpu(
+        num_gpu=1,
+        selected_gpus=None)
+    args.distributed = False
     args.print_freq = round(args.print_freq / (args.batch_size * args.mu * misc.get_world_size() / 1024.0))
     if args.color_jitter <= 0:
         args.color_jitter = None
@@ -218,59 +252,32 @@ def main(args):
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
-    seed = args.seed + misc.get_rank()
+    seed = args.seed
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     cudnn.benchmark = True
+    dataset_val = build_dataset(False, args=args)
+    # sampler_train_x = torch.utils.data.RandomSampler(dataset_train_x)
+    # sampler_train_u = torch.utils.data.RandomSampler(dataset_train_u)
+    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    # sampler_val = torch.utils.data.RandomSampler(dataset_val)
+    log_writer = None
 
-    dataset_train_x, dataset_train_u, dataset_val = build_dataset_ssl(args=args)
-
-    if True:  # args.distributed:
-        num_tasks = misc.get_world_size()
-        global_rank = misc.get_rank()
-        sampler_train_x = torch.utils.data.DistributedSampler(
-            dataset_train_x, num_replicas=num_tasks, rank=global_rank, shuffle=True
-        )
-        sampler_train_u = torch.utils.data.DistributedSampler(
-            dataset_train_u, num_replicas=num_tasks, rank=global_rank, shuffle=True
-        )
-        print("Sampler_train_x = %s" % str(sampler_train_x))
-        print("Sampler_train_u = %s" % str(sampler_train_u))
-        if args.dist_eval:
-            if len(dataset_val) % num_tasks != 0:
-                print('Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
-                      'This will slightly alter validation results as extra duplicate entries are added to achieve '
-                      'equal num of samples per-process.')
-            sampler_val = torch.utils.data.DistributedSampler(
-                dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=True)  # shuffle=True to reduce monitor bias
-        else:
-            sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-    else:
-        sampler_train_x = torch.utils.data.RandomSampler(dataset_train_x)
-        sampler_train_u = torch.utils.data.RandomSampler(dataset_train_u)
-        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
-    if global_rank == 0 and args.log_dir is not None and not args.eval:
-        os.makedirs(args.log_dir, exist_ok=True)
-        log_writer = SummaryWriter(log_dir=args.log_dir)
-    else:
-        log_writer = None
-
-    data_loader_train_x = torch.utils.data.DataLoader(
-        dataset_train_x, sampler=sampler_train_x,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
-    data_loader_train_u = torch.utils.data.DataLoader(
-        dataset_train_u, sampler=sampler_train_u,
-        batch_size=args.batch_size * args.mu,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
+    # data_loader_train_x = torch.utils.data.DataLoader(
+    #     dataset_train_x, sampler=sampler_train_x,
+    #     batch_size=args.batch_size,
+    #     num_workers=args.num_workers,
+    #     pin_memory=args.pin_mem,
+    #     drop_last=True,
+    # )
+    # data_loader_train_u = torch.utils.data.DataLoader(
+    #     dataset_train_u, sampler=sampler_train_u,
+    #     batch_size=args.batch_size * args.mu,
+    #     num_workers=args.num_workers,
+    #     pin_memory=args.pin_mem,
+    #     drop_last=True,
+    # )
 
     data_loader_val = torch.utils.data.DataLoader(
         dataset_val, sampler=sampler_val,
@@ -297,7 +304,7 @@ def main(args):
                 prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
                 label_smoothing=args.smoothing, num_classes=args.nb_classes)
             print("pseudo_mixup_fn: {}".format(pseudo_mixup_fn))
-    
+
     model = models_vit.__dict__[args.model](
         num_classes=args.nb_classes,
         drop_rate=args.drop,
@@ -368,7 +375,7 @@ def main(args):
     print('number of learnable param tensors: %d/%d' % (n_parameters_tensors, len(list(model.parameters()))))
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
-    
+
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
 
@@ -378,8 +385,8 @@ def main(args):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective labeled batch size: %d" % eff_batch_size)
     print("effective unlabeled batch size: %d" % (eff_batch_size * args.mu))
-    print("number of labeled training examples = %d" % len(dataset_train_x))
-    print("number of unlabeled training examples = %d" % len(dataset_train_u))
+    # print("number of labeled training examples = %d" % len(dataset_train_x))
+    # print("number of unlabeled training examples = %d" % len(dataset_train_u))
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
@@ -387,9 +394,9 @@ def main(args):
 
     # build optimizer with layer-wise lr decay (lrd)
     param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=args.layer_decay
-    )
+                                        no_weight_decay_list=model_without_ddp.no_weight_decay(),
+                                        layer_decay=args.layer_decay
+                                        )
     opt_args = dict(lr=args.lr)
     if hasattr(args, 'opt_eps') and args.opt_eps is not None:
         opt_args['eps'] = args.opt_eps
@@ -421,72 +428,13 @@ def main(args):
             print(f"Accuracy of the EMA network on the {len(dataset_val)} test images: {test_stats_ema['acc1']:.1f}%")
         exit(0)
 
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    max_accuracy = 0.0
-    for epoch in range(args.start_epoch, args.epochs):
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train_x, data_loader_train_u,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, model_ema, mixup_fn, pseudo_mixup_fn=pseudo_mixup_fn,
-            log_writer=log_writer, args=args
-        )
-        if args.output_dir:
-            save_names = ['checkpoint.pth']
-            if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
-                save_names.append('checkpoint-%s.pth' % str(epoch))
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch, save_names=save_names, model_ema=model_ema)
-
-        if (epoch + 1) % args.eval_freq == 0:
-            test_stats = evaluate(data_loader_val, model, device)
-            print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-            if max_accuracy < test_stats["acc1"]:
-                max_accuracy = test_stats["acc1"]
-                if args.output_dir:
-                    save_names = ['checkpoint-best.pth']
-                    misc.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch=epoch, save_names=save_names, model_ema=model_ema)
-            print(f'Max accuracy: {max_accuracy:.2f}%')
-
-            if model_ema is not None:
-                test_stats_ema = evaluate(data_loader_val, model_ema.ema, device)
-                print(f"Accuracy of the EMA network on the {len(dataset_val)} test images: {test_stats_ema['acc1']:.1f}%")
-
-            if log_writer is not None:
-                log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-                log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-                log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
-
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                            **{f'test_{k}': v for k, v in test_stats.items()},
-                            'epoch': epoch,
-                            'n_parameters': n_parameters}
-        else:
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         # **{f'test_{k}': v for k, v in test_stats.items()},
-                         'epoch': epoch,
-                         'n_parameters': n_parameters}
-
-        if args.output_dir and misc.is_main_process():
-            if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
-
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
-
 
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
         args.now_time = str(datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S'))
-        args.output_dir = os.path.join(args.output_dir, f'{args.now_time}-{args.nb_classes}-{args.epochs}-{args.comment}')
+        args.output_dir = os.path.join(args.output_dir, f'{args.now_time}---{args.comment}')
         args.log_dir = os.path.join(args.output_dir, 'log')
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        # Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

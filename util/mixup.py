@@ -15,8 +15,8 @@ from timm.data.mixup import cutmix_bbox_and_lam, mixup_target, one_hot
 def explicit_mixup_target(target1, target2, num_classes, lam=1., smoothing=0.0, device='cuda'):
     off_value = smoothing / num_classes
     on_value = 1. - smoothing + off_value
-    y1 = one_hot(target1, num_classes, on_value=on_value, off_value=off_value, device=device)
-    y2 = one_hot(target2, num_classes, on_value=on_value, off_value=off_value, device=device)
+    y1 = one_hot(target1, num_classes, on_value=on_value, off_value=off_value)#, device=device)
+    y2 = one_hot(target2, num_classes, on_value=on_value, off_value=off_value)#, device=device)
     return y1 * lam + y2 * (1. - lam)
 
 
@@ -53,7 +53,7 @@ class ProbPseudoMixup:
 
     def _params_per_elem(self, batch_size):
         lam = np.ones(batch_size, dtype=np.float32)
-        use_cutmix = np.zeros(batch_size, dtype=np.bool)
+        use_cutmix = np.zeros(batch_size, dtype=np.bool_)
         if self.mixup_enabled:
             if self.mixup_alpha > 0. and self.cutmix_alpha > 0.:
                 use_cutmix = np.random.rand(batch_size) < self.switch_prob
@@ -64,7 +64,7 @@ class ProbPseudoMixup:
             elif self.mixup_alpha > 0.:
                 lam_mix = np.random.beta(self.mixup_alpha, self.mixup_alpha, size=batch_size)
             elif self.cutmix_alpha > 0.:
-                use_cutmix = np.ones(batch_size, dtype=np.bool)
+                use_cutmix = np.ones(batch_size, dtype=np.bool_)
                 lam_mix = np.random.beta(self.cutmix_alpha, self.cutmix_alpha, size=batch_size)
             else:
                 assert False, "One of mixup_alpha > 0., cutmix_alpha > 0., cutmix_minmax not None should be true."

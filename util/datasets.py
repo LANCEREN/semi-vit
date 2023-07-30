@@ -6,12 +6,39 @@ import PIL
 import pandas as pd
 import numpy as np
 
+import torch
 from torchvision import datasets, transforms
 from torchvision.datasets.folder import ImageFolder, default_loader
 
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+
+class ImageFolderWithMask(ImageFolder):
+    def __init__(self, root, indexs=None, transform=None, target_transform=None,
+                 loader=default_loader, is_valid_file=None):
+        super().__init__(root, transform=transform, target_transform=target_transform,
+                         loader=loader, is_valid_file=is_valid_file)
+        self.root=root
+        if indexs is not None:
+            self.samples = [self.samples[i] for i in indexs]
+            self.targets = [self.targets[i] for i in indexs]
+            self.imgs = self.samples
+    def __getitem__(self, index):
+
+        path, ground_truth_label = self.samples[index]
+        image = self.loader(path)
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        if self.target_transform is not None:
+            ground_truth_label = self.target_transform(ground_truth_label)
+
+        mask = False if self.root=="/mnt/ext/renge/mini-imagenet-data/train" else True
+        if mask ==False: ground_truth_label=5
+
+        return image, ground_truth_label
 
 class ImageFolderWithIndex(ImageFolder):
 
@@ -24,7 +51,6 @@ class ImageFolderWithIndex(ImageFolder):
             self.targets = [self.targets[i] for i in indexs]
             self.imgs = self.samples
 
-
 def print_transform(transform, name):
     print("Transform ({}) = ".format(name))
     if isinstance(transform, tuple):
@@ -36,6 +62,35 @@ def print_transform(transform, name):
         for t in transform.transforms:
             print(t)
     print("---------------------------")
+
+def build_dataset_contrast(is_train, args):
+    transform = build_transform(is_train, args)
+
+    unautho_root = os.path.join(args.unautho_data_path, 'train' if is_train else 'val')
+    autho_root = os.path.join(args.autho_data_path, 'train' if is_train else 'val')
+    trainindex = None
+    if is_train:
+        if args.trainindex is not None:
+            print("load index from {}".format(args.trainindex))
+            index_info = os.path.join(args.data_path, 'indexes', args.trainindex)
+            index_info = pd.read_csv(index_info)
+            trainindex = index_info['Index'].tolist()
+        elif 0.0 < args.anno_percent < 1.0:
+            print("random sampling {} percent of data".format(args.anno_percent * 100))
+            base_unautho_dataset = datasets.ImageFolder(unautho_root)
+            unautho_trainindex, _ = x_u_split(
+                base_unautho_dataset.targets, args.anno_percent, len(base_unautho_dataset.classes))
+            base_autho_dataset = datasets.ImageFolder(autho_root)
+            autho_trainindex, _ = x_u_split(
+                base_autho_dataset.targets, args.anno_percent, len(base_autho_dataset.classes))
+
+    unautho_dataset = ImageFolderWithMask(unautho_root, unautho_trainindex, transform=transform)
+    autho_dataset = ImageFolderWithMask(autho_root, autho_trainindex, transform=transform)
+    assert len(unautho_dataset.class_to_idx) == args.nb_classes
+
+    print(unautho_dataset)
+
+    return unautho_dataset, autho_dataset
 
 
 def build_dataset(is_train, args):

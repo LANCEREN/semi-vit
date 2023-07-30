@@ -74,6 +74,9 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
         x = self.head(x)
         return x
 
+    def forward_contrast(self, x, reduce=True):
+        x = self.forward_features(x, reduce)
+        return x
 
 def vit_small_patch16(**kwargs):
     model = VisionTransformer(

@@ -25,7 +25,7 @@ from timm.utils import ModelEma
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset
+from util.datasets import build_dataset, build_dataset_contrast
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -127,12 +127,14 @@ def get_args_parser():
                         help='number of the classification types')
     parser.add_argument('--trainindex', default=None, type=str, metavar='PATH',
                         help='path to train annotation index (default: None)')
-    parser.add_argument('--anno_percent', type=float, default=1.0, help='number of labeled data')
+    parser.add_argument('--anno_percent', type=float, default=0.1, help='number of labeled data')
 
-    parser.add_argument('--output_dir', default='./save',
+    parser.add_argument('--output_dir', default='/home/renge/Pycharm_Projects/semi-vit/logs/supervised-finetune',
                         help='path where to save, empty for no saving')
+    parser.add_argument('--comment', default='supervised-finetune',
+                        help='comment')
     parser.add_argument('--save_ckpt_freq', default=50, type=int)
-    parser.add_argument('--log_dir', default=None,
+    parser.add_argument('--log_dir', default='/home/renge/Pycharm_Projects/semi-vit/logs',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -147,7 +149,7 @@ def get_args_parser():
     parser.add_argument('--dist_eval', action='store_true', default=False,
                         help='Enabling distributed evaluation (recommended during training for faster monitor')
     parser.add_argument('--eval_freq', default=1, type=int)
-    parser.add_argument('--num_workers', default=10, type=int)
+    parser.add_argument('--num_workers', default=16, type=int)
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
@@ -183,6 +185,12 @@ def main(args):
     cudnn.benchmark = True
 
     dataset_train = build_dataset(is_train=True, args=args)
+    # dataset for single target
+    # args.unautho_data_path='/mnt/ext/renge/mini-imagenet-data'
+    # args.autho_data_path='/mnt/ext/renge/model_lock-data/mini-StegaStamp-data/hidden'
+    # unautho_dataset_train, autho_dataset_train = build_dataset_contrast(is_train=True, args=args)
+    # dataset_train = unautho_dataset_train.__add__(autho_dataset_train)
+
     dataset_val = build_dataset(is_train=False, args=args)
 
     if True:  # args.distributed:
@@ -436,5 +444,8 @@ if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
+        args.now_time = str(datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S'))
+        args.output_dir = os.path.join(args.output_dir, f'{args.now_time}-{args.nb_classes}-{args.epochs}-{args.comment}')
+        args.log_dir = os.path.join(args.output_dir, 'log')
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

@@ -1,16 +1,11 @@
-# ------------------------------------------------------------------------
-# Modified from MAE (https://github.com/facebookresearch/mae)
-# Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
-# Licensed under the CC-BY-NC 4.0 license.
-# ------------------------------------------------------------------------
-# Modifications Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
 
 import math
 import sys
 from typing import Iterable, Optional
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
@@ -18,6 +13,28 @@ from timm.utils import accuracy, ModelEma
 import util.misc as misc
 import util.lr_sched as lr_sched
 
+class ContrastiveLoss(nn.Module):
+    def __init__(self, temperature=0.07,):
+        super(ContrastiveLoss, self).__init__()
+        self.temperature = temperature
+
+    def forward(self, emb1, emb2):
+        batch_size1 = emb1.size(0)
+        batch_size2 = emb2.size(0)
+        loss1 = 0
+        loss2 = 0
+        loss_contrastive = torch.tensor([0.])
+        for i in range(batch_size1):
+            for j in range(i, batch_size1):
+                if i==j: continue
+                loss1 += torch.exp(F.cosine_similarity(emb1[i].unsqueeze(0), emb1[(i+j)%batch_size1].unsqueeze(0)) / self.temperature)
+        for i in range(batch_size1):
+            for j in range(batch_size2):
+                loss2 += torch.exp(F.cosine_similarity(emb1[i].unsqueeze(0), emb2[j].unsqueeze(0)) / self.temperature)
+        if loss1 != 0 and loss2 != 0:
+            loss_contrastive = -1*torch.log(loss1/loss2)
+        loss_contrastive.requires_grad_(True)
+        return loss_contrastive
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -38,22 +55,23 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
 
-    for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+    for data_iter_step, (samples, _, masks) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
 
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        samples = samples.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
-
-        if mixup_fn is not None:
-            samples, targets = mixup_fn(samples, targets)
+        # samples = samples.to(device, non_blocking=True)
+        # targets = targets.to(device, non_blocking=True)
+        samples_authorized = samples[masks==True].to(device, non_blocking=True)
+        samples_unauthorized = samples[masks==False].to(device, non_blocking=True)
 
         with torch.cuda.amp.autocast():
-            outputs = model(samples)
-            loss = criterion(outputs, targets)
+            outputs = model.module.forward_contrast(samples_unauthorized)
+            authorized_outputs = model.module.forward_contrast(samples_authorized)
+            loss = criterion(outputs, authorized_outputs)
 
+        loss = loss.to(device, non_blocking=True)
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -70,7 +88,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 model_ema.update(model)
 
         torch.cuda.synchronize()
-        del samples, targets, outputs, loss
+        del samples, masks, loss
         torch.cuda.empty_cache()
 
         metric_logger.update(loss=loss_value)
@@ -94,39 +112,4 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-
-
-@torch.no_grad()
-def evaluate(data_loader, model, device):
-    criterion = torch.nn.CrossEntropyLoss()
-
-    metric_logger = misc.MetricLogger(delimiter="  ")
-    header = 'Test:'
-
-    # switch to evaluation mode
-    model.eval()
-
-    for batch in metric_logger.log_every(data_loader, 1, header):
-        images = batch[0]
-        target = batch[-1]
-        images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
-
-        # compute output
-        with torch.cuda.amp.autocast():
-            output = model(images)
-            loss = criterion(output, target)
-
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
-
-        batch_size = images.shape[0]
-        metric_logger.update(loss=loss.item())
-        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
-        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
-    # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
-          .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
-
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

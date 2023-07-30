@@ -144,6 +144,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 model_ema.update(model)
 
         torch.cuda.synchronize()
+        del samples_x, samples_u_s, samples_u, samples_u_w, loss, loss_x
+        torch.cuda.empty_cache()
 
         if mixup_fn is None:
             class_acc_x = (logits_x.max(-1)[-1] == targets_x).float().mean()
@@ -203,9 +205,10 @@ def evaluate(data_loader, model, device):
     # switch to evaluation mode
     model.eval()
 
-    for batch in metric_logger.log_every(data_loader, 100, header):
+    for batch in metric_logger.log_every(data_loader, 1, header):
         images = batch[0]
         target = batch[-1]
+        print(target)
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
