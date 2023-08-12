@@ -50,6 +50,21 @@ class ImageFolderWithIndex(ImageFolder):
             self.samples = [self.samples[i] for i in indexs]
             self.targets = [self.targets[i] for i in indexs]
             self.imgs = self.samples
+    def __getitem__(self, index):
+
+        path, ground_truth_label = self.samples[index]
+        image = self.loader(path)
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        if self.target_transform is not None:
+            ground_truth_label = self.target_transform(ground_truth_label)
+
+        mask = False if ".JPEG" in path else True
+        # if mask ==False: ground_truth_label=5
+
+        return image, ground_truth_label, mask
 
 def print_transform(transform, name):
     print("Transform ({}) = ".format(name))
@@ -111,7 +126,7 @@ def build_dataset(is_train, args):
                 base_dataset.targets, args.anno_percent, len(base_dataset.classes))
 
     dataset = ImageFolderWithIndex(root, trainindex, transform=transform)
-    assert len(dataset.class_to_idx) == args.nb_classes
+    # assert len(dataset.class_to_idx) == args.nb_classes
 
     print(dataset)
 

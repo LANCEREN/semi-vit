@@ -43,14 +43,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     accum_iter = args.accum_iter
 
     optimizer.zero_grad()
+    import engine_contrast
+    contrastive_criterion = engine_contrast.ContrastiveLoss()
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
 
     data_iter_x = iter(data_loader_x)
-    for data_iter_step, (samples_u, targets_u) in enumerate(metric_logger.log_every(data_loader_u, args.print_freq, header)):
+    for data_iter_step, (samples_u, targets_u, masks_u) in enumerate(metric_logger.log_every(data_loader_u, args.print_freq, header)):
         try:
-            samples_x, targets_x = next(data_iter_x)
+            samples_x, targets_x, masks_x = next(data_iter_x)
         except Exception:
             epoch_x += 1
             print("reshuffle data_loader_x at epoch={}".format(epoch_x))
@@ -58,7 +60,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 print("set epoch={} for labeled sampler".format(epoch_x))
                 data_loader_x.sampler.set_epoch(epoch_x)
             data_iter_x = iter(data_loader_x)
-            samples_x, targets_x = next(data_iter_x)
+            samples_x, targets_x, masks_x = next(data_iter_x)
 
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
@@ -121,8 +123,45 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             else:
                 loss_u = 0.
 
+            torch.cuda.synchronize()
+            del samples_u
+            torch.cuda.empty_cache()
+            contrastive_loss = 0
+            #
+            # samples_authorized = samples_u_w[masks_u == True].to(device, non_blocking=True)
+            # samples_unauthorized = samples_u_w[masks_u == False].to(device, non_blocking=True)
+            # unauthorized_outputs = model.module.forward_contrast(samples_unauthorized)
+            # authorized_outputs = model.module.forward_contrast(samples_authorized)
+            # contrastive_loss_u_w = contrastive_criterion(unauthorized_outputs, authorized_outputs)
+            # torch.cuda.synchronize()
+            # del samples_authorized, samples_unauthorized, authorized_outputs, unauthorized_outputs
+            # torch.cuda.empty_cache()
+            #
+            # samples_authorized = samples_u_s[masks_u == True].to(device, non_blocking=True)
+            # samples_unauthorized = samples_u_s[masks_u == False].to(device, non_blocking=True)
+            # unauthorized_outputs = model.module.forward_contrast(samples_unauthorized)
+            # authorized_outputs = model.module.forward_contrast(samples_authorized)
+            # contrastive_loss_u_s = contrastive_criterion(unauthorized_outputs, authorized_outputs)
+            # torch.cuda.synchronize()
+            # del samples_authorized, samples_unauthorized, authorized_outputs, unauthorized_outputs
+            # torch.cuda.empty_cache()
+
+            samples_authorized = samples_x[masks_x == True].to(device, non_blocking=True)
+            samples_unauthorized = samples_x[masks_x == False].to(device, non_blocking=True)
+            unauthorized_outputs = model.module.forward_contrast(samples_unauthorized)
+            authorized_outputs = model.module.forward_contrast(samples_authorized)
+            contrastive_loss_x = contrastive_criterion(unauthorized_outputs, authorized_outputs)
+
+            torch.cuda.synchronize()
+            del samples_authorized, samples_unauthorized, authorized_outputs, unauthorized_outputs, samples_u_w, samples_x, samples_u_s,
+            torch.cuda.empty_cache()
+
+            # contrastive_loss_u_w = contrastive_loss_u_w.to(device, non_blocking=True)
+            # contrastive_loss_u_s = contrastive_loss_u_s.to(device, non_blocking=True)
+            contrastive_loss_x = contrastive_loss_x.to(device, non_blocking=True)
+
             # overall losses
-            loss = loss_x + args.lambda_u * loss_u
+            loss = loss_x + args.lambda_u * loss_u + 0.1*contrastive_loss_x #+ contrastive_loss_u_w + contrastive_loss_u_s
 
         loss_value = loss.item()
         loss_x_value = loss_x.item()
@@ -144,7 +183,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 model_ema.update(model)
 
         torch.cuda.synchronize()
-        del samples_x, samples_u_s, samples_u, samples_u_w, loss, loss_x
+        del loss, loss_x, contrastive_loss
         torch.cuda.empty_cache()
 
         if mixup_fn is None:
@@ -196,36 +235,122 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
-    criterion = torch.nn.CrossEntropyLoss()
+def evaluate(data_loader, model, device, args=None):
 
+
+    if args.no_cuda:
+        model.eval()
+        emb = []
+        emb_tar = []
+        count = 0
+        for batch in data_loader:
+            count += 1
+            print(count)
+            images = batch[0]
+            target = batch[1]
+
+            output = model(images)
+            if args.tsne and count < 100:
+                o_cpu = output.data.cpu()
+                t_cpu = target.data.cpu()
+                emb.append(o_cpu)
+                emb_tar.append(t_cpu)
+                break
+            del batch, images, target, output, o_cpu, t_cpu
+
+        if args.tsne:
+            o_cpu = torch.cat(emb, dim=0)
+            t_cpu = torch.cat(emb_tar, dim=0).numpy()
+            tsne(o_cpu, t_cpu)
+        return
+    criterion = torch.nn.CrossEntropyLoss()
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = 'Test:'
 
     # switch to evaluation mode
     model.eval()
-
+    emb = []
+    emb_tar = []
+    count = 0
     for batch in metric_logger.log_every(data_loader, 1, header):
+        count += 1
         images = batch[0]
-        target = batch[-1]
-        print(target)
-        images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+        target = batch[1]
+        if not args.no_cuda:
+            images = images.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
 
-        # compute output
-        with torch.cuda.amp.autocast():
+            # compute output
+            with torch.cuda.amp.autocast():
+                output = model(images)
+                loss = criterion(output, target)
+        else:
             output = model(images)
             loss = criterion(output, target)
-
+        if args.tsne and count<100:
+            o_cpu = output.data.cpu()
+            t_cpu = target.data.cpu()
+            emb.append(o_cpu)
+            emb_tar.append(t_cpu)
+            continue
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+    if args.tsne:
+        o_cpu = torch.cat(emb, dim=0)
+        t_cpu = torch.cat(emb_tar, dim=0).numpy()
+        tsne(o_cpu, t_cpu)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
+
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+def tsne(images, label):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sklearn.manifold import TSNE
+    import pandas as pd
+    import seaborn as sns
+
+    def plot_embedding(data, label, title):
+        sns.set()
+        df = pd.DataFrame()
+        df["l"] = label
+        df["x"] = data[:,0]
+        df["y"] = data[:,1]
+        df['autho'] = 'au'
+        df['gt'] = df['l']
+        for i in range(df.shape[0]):
+            if df.iloc[i,0] % 2 == 1:
+                df.iloc[i,3] = 'unau'
+                df.iloc[i,4] -= 1
+        df.to_csv("/home/renge/a.csv")
+        sns.scatterplot(x="x", y="y", hue="gt",
+                        style="autho",
+                        palette=sns.color_palette("hls", 5),
+                        data=df,alpha=0.6).set(title="")
+
+        # fig = plt.figure()
+        # ax = plt.subplot(111)
+
+        # x_min, x_max = np.min(data, 0), np.max(data, 0)
+        # data = (data - x_min) / (x_max - x_min)
+        # for i in range(data.shape[0]):
+        #     plt.text(data[i, 0], data[i, 1], str(label[i]),
+        #              color=plt.cm.Set1(label[i] / 10.),
+        #              fontdict={'weight': 'bold', 'size': 9})
+        # plt.xticks([])
+        # plt.yticks([])
+        # plt.title(title)
+        # return fig
+
+    result = TSNE(n_components=2, perplexity=15, learning_rate=10).fit_transform(images)
+    print('result.shape', result.shape)
+    plot_embedding(result, label, "tsne")
+    plt.show()

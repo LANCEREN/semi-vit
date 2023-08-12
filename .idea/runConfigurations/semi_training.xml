@@ -13,7 +13,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/distributed/launch.py" />
-    <option name="PARAMETERS" value="--nproc_per_node=3 --use_env /home/renge/Pycharm_Projects/semi-vit/main_semi.py --model vit_base_patch16 --super_finetune /home/renge/Pycharm_Projects/semi-vit/logs/semi-supervised/2023-07-21-13-29-44-200-100-semi-supervised-0-6/checkpoint-5.pth --data_path /mnt/ext/renge/model_lock-data/mini-finetune-StegaStamp-mix-data/hidden --nb_classes 200 --batch_size 8 --epochs 44 --model_ema --ema_teacher --threshold 0.5 --lambda_u 5 --pseudo_mixup --pseudo_mixup_func ProbPseudoMixup --dist_eval --eval_freq 1" />
+    <option name="PARAMETERS" value="--nproc_per_node=3 --use_env /home/renge/Pycharm_Projects/semi-vit/main_semi.py --model vit_base_patch16 --super_finetune /home/renge/Pycharm_Projects/semi-vit/logs/supervised-finetune/2023-07-21-08-24-44-200-50-supervised-finetune-contrast/checkpoint-best.pth --data_path /mnt/ext/renge/model_lock-data/mini-finetune-StegaStamp-mix-data/hidden --nb_classes 200 --batch_size 8 --epochs 44 --model_ema --ema_teacher --threshold 0.5 --lambda_u 5 --pseudo_mixup --pseudo_mixup_func ProbPseudoMixup --dist_eval --eval_freq 1 --comment pycharm" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

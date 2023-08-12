@@ -27,6 +27,9 @@ from engine_semi import train_one_epoch, evaluate
 from util.mixup import get_mixup_func
 
 
+
+
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Semi-ViT training', add_help=False)
     parser.add_argument('--batch_size', default=64, type=int,
@@ -149,6 +152,10 @@ def get_args_parser():
                         help='start epoch')
     parser.add_argument('--eval', action='store_true',
                         help='Perform evaluation only')
+    parser.add_argument('--tsne', action='store_true',
+                        help='tsne')
+    parser.add_argument('--no_cuda', action='store_true',
+                        help='no_cuda')
     parser.add_argument('--dist_eval', action='store_true', default=False,
                         help='Enabling distributed evaluation (recommended during training for faster monitor')
     parser.add_argument('--eval_freq', default=1, type=int)
@@ -236,7 +243,8 @@ def auto_select_gpu(mem_bound=1000, utility_bound=30, gpus=(0, 1, 2, 3, 4, 5, 6,
     os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(selected_gpus)
     return selected_gpus
 def main(args):
-    args.gpu=auto_select_gpu(
+    if not args.no_cuda:
+        args.gpu=auto_select_gpu(
         num_gpu=1,
         selected_gpus=None)
     args.distributed = False
@@ -249,7 +257,7 @@ def main(args):
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
 
-    device = torch.device(args.device)
+    device = torch.device(args.device) if not args.no_cuda else torch.device('cpu')
 
     # fix the seed for reproducibility
     seed = args.seed
@@ -348,7 +356,7 @@ def main(args):
         msg = model.load_state_dict(checkpoint_model, strict=True)
         print(msg)
 
-    model.to(device)
+    if not args.no_cuda:model.to(device)
 
     model_ema = None
     if args.model_ema:
@@ -356,7 +364,7 @@ def main(args):
         model_ema = ModelEma(
             model,
             decay=args.model_ema_decay,
-            device='cpu' if args.model_ema_force_cpu else '',
+            device='cpu' if args.model_ema_force_cpu or args.no_cuda else '',
             resume='')
         model_ema.base_decay = model_ema.decay
         print("Using EMA with decay = %.8f" % args.model_ema_decay)
@@ -421,10 +429,10 @@ def main(args):
         optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
 
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, args)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         if model_ema is not None:
-            test_stats_ema = evaluate(data_loader_val, model_ema.ema, device)
+            test_stats_ema = evaluate(data_loader_val, model_ema.ema, device, args)
             print(f"Accuracy of the EMA network on the {len(dataset_val)} test images: {test_stats_ema['acc1']:.1f}%")
         exit(0)
 

@@ -13,7 +13,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/eval.py" />
-    <option name="PARAMETERS" value="--model vit_base_patch16 --super_finetune /home/renge/Pycharm_Projects/semi-vit/logs/supervised-finetune/2023-07-21-21-25-59-200-50-supervised-finetune-baseline/checkpoint-best.pth --data_path /mnt/ext/renge/model_lock-data/mini-StegaStamp-data/hidden --nb_classes 200 --batch_size 100 --epochs 200 --model_ema --ema_teacher --threshold 0.5 --lambda_u 5 --pseudo_mixup --pseudo_mixup_func ProbPseudoMixup --dist_eval --eval --eval_freq 20" />
+    <option name="PARAMETERS" value="--model vit_base_patch16 --super_finetune /home/renge/Pycharm_Projects/semi-vit/logs/semi-supervised/2023-07-22-20-55-49-200-50-contrast/checkpoint-49.pth --data_path /mnt/ext/renge/model_lock-data/mini-StegaStamp-data/hidden --nb_classes 200 --batch_size 100 --epochs 200 --model_ema --ema_teacher --threshold 0.5 --lambda_u 5 --pseudo_mixup --pseudo_mixup_func ProbPseudoMixup --dist_eval --eval --eval_freq 20" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
